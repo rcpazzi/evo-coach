@@ -8,8 +8,8 @@
   - `LEARNING.md` for stack-specific guidance and mental models.
 
 ## 2. Current Migration Phase
-- Steps 2, 3, 5, and 6 are implemented (auth, app shell, Garmin core + sync routes).
-- Current active target is Step 4 catch-up: dashboard component suite + health metrics API.
+- Steps 2 through 6 are implemented (auth, app shell, dashboard catch-up, Garmin core + sync routes).
+- Current active target is Phase 5: implementation Steps 7 and 8 (AI generation core + workout API/UI flow).
 - Do not skip migration order unless explicitly requested by the user.
 
 ## 3. Core Engineering Rules

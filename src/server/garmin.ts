@@ -96,11 +96,11 @@ function classifyGarminError(error: unknown): { message: string; status: number 
 function detectCapabilities(client: RawGarminClient): GarminCapability[] {
   const checks: Array<[GarminCapability, string[]]> = [
     ["activities", ["getActivitiesByDate", "get_activities_by_date", "getActivities"]],
-    ["sleep", ["getSleepData", "get_sleep_data"]],
-    ["hrv", ["getHrvData", "get_hrv_data"]],
-    ["restingHr", ["getHeartRates", "get_heart_rates", "getRestingHeartRate"]],
+      ["sleep", ["getSleepData", "get_sleep_data"]],
+    ["hrv", ["getHrvData", "getHRVData", "get_hrv_data"]],
+    ["restingHr", ["getHeartRate", "getHeartRates", "get_heart_rates", "getRestingHeartRate"]],
     ["racePredictions", ["getRacePredictions", "get_race_predictions"]],
-    ["uploadWorkout", ["uploadWorkout", "upload_workout"]],
+    ["uploadWorkout", ["uploadWorkout", "upload_workout", "addWorkout"]],
   ];
 
   const capabilities: GarminCapability[] = [];
@@ -298,8 +298,210 @@ function isMissingCapabilityError(error: unknown): boolean {
   return error.message.startsWith("Missing Garmin capability:");
 }
 
-function fallbackHttpRequest(operation: string): never {
+function getGarminApiBaseUrl(client: RawGarminClient): string {
+  const urlObject = asObject(client.url);
+  const gcApi = urlObject && typeof urlObject.GC_API === "string" ? urlObject.GC_API : null;
+  return gcApi ?? "https://connectapi.garmin.com";
+}
+
+async function resolveClientDisplayName(client: RawGarminClient): Promise<string | null> {
+  try {
+    const profileRaw = await invokeMethod(client, ["getUserProfile", "get_user_profile"], [[]]);
+    const profile = asObject(profileRaw);
+    if (!profile) {
+      return null;
+    }
+
+    const candidates = [profile.displayName, profile.username, profile.userName];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim() !== "") {
+        return candidate.trim();
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function fallbackHttpRequest(
+  client: RawGarminClient,
+  operation: string,
+  options?: { date?: string },
+): Promise<unknown> {
+  const getMethod = client.get;
+  if (!isFunction(getMethod)) {
+    throw new GarminCapabilityError(operation);
+  }
+
+  const baseUrl = getGarminApiBaseUrl(client);
+
+  if (operation === "race-predictions") {
+    const displayName = await resolveClientDisplayName(client);
+    if (!displayName) {
+      throw new GarminCapabilityError(
+        operation,
+        "Garmin race predictions require a profile display name, but none was available.",
+        500,
+      );
+    }
+
+    const url = `${baseUrl}/metrics-service/metrics/racepredictions/latest/${displayName}`;
+    return await Promise.resolve(getMethod.call(client, url));
+  }
+
+  if (operation === "hrv") {
+    if (!options?.date) {
+      throw new GarminCapabilityError(operation, "HRV fallback requires a date.", 500);
+    }
+
+    const url = `${baseUrl}/hrv-service/hrv/${options.date}`;
+    return await Promise.resolve(getMethod.call(client, url));
+  }
+
+  if (operation === "resting-heart-rate") {
+    if (!options?.date) {
+      throw new GarminCapabilityError(
+        operation,
+        "Resting heart rate fallback requires a date.",
+        500,
+      );
+    }
+
+    const displayName = await resolveClientDisplayName(client);
+    if (!displayName) {
+      throw new GarminCapabilityError(
+        operation,
+        "Garmin resting heart rate fallback requires a profile display name, but none was available.",
+        500,
+      );
+    }
+
+    const url = `${baseUrl}/userstats-service/wellness/daily/${displayName}`;
+    return await Promise.resolve(
+      getMethod.call(client, url, {
+        params: {
+          fromDate: options.date,
+          untilDate: options.date,
+          metricId: 60,
+        },
+      }),
+    );
+  }
+
   throw new GarminCapabilityError(operation);
+}
+
+function parseDateOnly(date: string): Date {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid date '${date}'. Expected YYYY-MM-DD.`);
+  }
+
+  return parsed;
+}
+
+function toDateOnlyTimestamp(value: Date): number {
+  return Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
+}
+
+function extractActivityDate(raw: unknown): Date | null {
+  const activity = asObject(raw);
+  if (!activity) {
+    return null;
+  }
+
+  const candidates = [
+    activity.startTimeLocal,
+    activity.startTimeGMT,
+    activity.activityDate,
+    activity.startTime,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      const parsed = new Date(candidate);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      const parsed = new Date(candidate);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+}
+
+function isDateWithinRange(date: Date, startDate: string, endDate: string): boolean {
+  const timestamp = toDateOnlyTimestamp(date);
+  const start = toDateOnlyTimestamp(parseDateOnly(startDate));
+  const end = toDateOnlyTimestamp(parseDateOnly(endDate));
+
+  return timestamp >= start && timestamp <= end;
+}
+
+async function fetchActivitiesInDateRange(
+  client: RawGarminClient,
+  startDate: string,
+  endDate: string,
+): Promise<unknown[]> {
+  const hasPagedActivitiesMethod = isFunction(client.getActivities);
+  if (!hasPagedActivitiesMethod) {
+    return (await fallbackHttpRequest(client, "activities")) as unknown[];
+  }
+
+  const collected: unknown[] = [];
+  const limit = 100;
+  let offset = 0;
+
+  for (let page = 0; page < 30; page += 1) {
+    const response = await invokeMethod(
+      client,
+      ["getActivities"],
+      [
+        [offset, limit, "running"],
+        [offset, limit],
+        [{ start: offset, limit, activityType: "running" }],
+      ],
+    );
+
+    const pageActivities = normalizeActivityResponse(response);
+    if (pageActivities.length === 0) {
+      break;
+    }
+
+    for (const activity of pageActivities) {
+      const activityDate = extractActivityDate(activity);
+      if (activityDate && isDateWithinRange(activityDate, startDate, endDate)) {
+        collected.push(activity);
+      }
+    }
+
+    const oldestActivityDate = pageActivities
+      .map((activity) => extractActivityDate(activity))
+      .filter((date): date is Date => Boolean(date))
+      .sort((a, b) => a.getTime() - b.getTime())[0];
+
+    if (oldestActivityDate && !isDateWithinRange(oldestActivityDate, startDate, endDate)) {
+      if (toDateOnlyTimestamp(oldestActivityDate) < toDateOnlyTimestamp(parseDateOnly(startDate))) {
+        break;
+      }
+    }
+
+    if (pageActivities.length < limit) {
+      break;
+    }
+
+    offset += pageActivities.length;
+  }
+
+  return collected;
 }
 
 function normalizeActivityResponse(value: unknown): unknown[] {
@@ -327,20 +529,27 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
   return {
     async getActivities(startDate, endDate) {
       try {
-        const response = await invokeMethod(
-          client,
-          ["getActivitiesByDate", "get_activities_by_date", "getActivities"],
-          [
-            [startDate, endDate, "running"],
-            [startDate, endDate],
-            [{ startDate, endDate, activityType: "running" }],
-          ],
-        );
+        const hasDateRangeMethod =
+          isFunction(client.getActivitiesByDate) || isFunction(client.get_activities_by_date);
 
-        return normalizeActivityResponse(response);
+        if (hasDateRangeMethod) {
+          const response = await invokeMethod(
+            client,
+            ["getActivitiesByDate", "get_activities_by_date"],
+            [
+              [startDate, endDate, "running"],
+              [startDate, endDate],
+              [{ startDate, endDate, activityType: "running" }],
+            ],
+          );
+
+          return normalizeActivityResponse(response);
+        }
+
+        return fetchActivitiesInDateRange(client, startDate, endDate);
       } catch (error) {
         if (isMissingCapabilityError(error)) {
-          return fallbackHttpRequest("activities");
+          return (await fallbackHttpRequest(client, "activities")) as unknown[];
         }
         throw error;
       }
@@ -348,21 +557,36 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
 
     async getSleepData(date) {
       try {
-        return await invokeMethod(client, ["getSleepData", "get_sleep_data"], [[date]]);
+        return await invokeMethod(client, ["getSleepData", "get_sleep_data"], [
+          [new Date(`${date}T00:00:00.000Z`)],
+          [date],
+        ]);
       } catch (error) {
         if (isMissingCapabilityError(error)) {
-          return fallbackHttpRequest("sleep");
+          return await fallbackHttpRequest(client, "sleep", { date });
         }
         throw error;
       }
     },
 
     async getHrvData(date) {
+      const hasHrvMethod =
+        isFunction(client.getHrvData) ||
+        isFunction(client.getHRVData) ||
+        isFunction(client.get_hrv_data);
+
+      if (!hasHrvMethod) {
+        return await fallbackHttpRequest(client, "hrv", { date });
+      }
+
       try {
-        return await invokeMethod(client, ["getHrvData", "get_hrv_data"], [[date]]);
+        return await invokeMethod(client, ["getHrvData", "getHRVData", "get_hrv_data"], [
+          [new Date(`${date}T00:00:00.000Z`)],
+          [date],
+        ]);
       } catch (error) {
         if (isMissingCapabilityError(error)) {
-          return fallbackHttpRequest("hrv");
+          return await fallbackHttpRequest(client, "hrv", { date });
         }
         throw error;
       }
@@ -372,12 +596,12 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
       try {
         return await invokeMethod(
           client,
-          ["getHeartRates", "get_heart_rates", "getRestingHeartRate"],
-          [[date]],
+          ["getHeartRate", "getHeartRates", "get_heart_rates", "getRestingHeartRate"],
+          [[new Date(`${date}T00:00:00.000Z`)], [date]],
         );
       } catch (error) {
         if (isMissingCapabilityError(error)) {
-          return fallbackHttpRequest("resting-heart-rate");
+          return await fallbackHttpRequest(client, "resting-heart-rate", { date });
         }
         throw error;
       }
@@ -392,7 +616,7 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
         );
       } catch (error) {
         if (isMissingCapabilityError(error)) {
-          return fallbackHttpRequest("race-predictions");
+          return await fallbackHttpRequest(client, "race-predictions");
         }
         throw error;
       }
@@ -400,10 +624,14 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
 
     async uploadWorkout(workoutJson) {
       try {
-        return await invokeMethod(client, ["uploadWorkout", "upload_workout"], [[workoutJson]]);
+        return await invokeMethod(
+          client,
+          ["uploadWorkout", "upload_workout", "addWorkout"],
+          [[workoutJson]],
+        );
       } catch (error) {
         if (isMissingCapabilityError(error)) {
-          return fallbackHttpRequest("upload-workout");
+          return await fallbackHttpRequest(client, "upload-workout");
         }
         throw error;
       }

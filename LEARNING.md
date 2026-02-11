@@ -4,6 +4,22 @@ A practical reference for migrating from Flask/SQLite to Next.js/React/Shadcn/Pr
 
 ---
 
+## Current Implementation Notes (February 11, 2026)
+
+- AI provider selection is runtime-configurable via `AI_PROVIDER`:
+  - `openrouter` (default) requires `OPENROUTER_API_KEY`
+  - `anthropic` requires `ANTHROPIC_API_KEY`
+- Workout generation API contract:
+  - `POST /api/workout/generate`
+  - Requires authenticated user and existing `userRunningFitness` data
+  - Missing fitness profile returns a sync-first guidance error
+- Workout decision APIs:
+  - `POST /api/workout/[id]/accept` uploads to Garmin first, then marks workout `uploaded`
+  - If Garmin upload fails, workout remains `generated`
+  - `POST /api/workout/[id]/reject` marks workout `rejected`
+
+---
+
 ## 1. Tech Stack Overview
 
 | Tool | What It Does | Flask Equivalent |

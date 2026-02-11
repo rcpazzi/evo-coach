@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { type GarminAdapter, getGarminClientForUser } from "@/server/garmin";
+import {
+  GarminCapabilityError,
+  type GarminAdapter,
+  getGarminClientForUser,
+} from "@/server/garmin";
 import {
   mapActivity,
   mapDailyHealthReadings,
@@ -113,6 +117,24 @@ function isRunningActivity(raw: unknown, mappedType?: string | null): boolean {
     (typeof activityTypeRaw === "string" ? activityTypeRaw : undefined);
 
   return Boolean(typeKey && typeKey.toLowerCase().includes("running"));
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRecoverableGarminDataError(error: unknown): boolean {
+  if (error instanceof GarminCapabilityError) {
+    return true;
+  }
+
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("404") ||
+    message.includes("not found") ||
+    message.includes("notfoundexception") ||
+    message.includes("missing garmin capability")
+  );
 }
 
 async function resolveGarminClient(
@@ -310,6 +332,7 @@ export async function syncDailyHealthData(
     }
 
     let synced = 0;
+    let skippedUnavailable = 0;
     const totalDays = Math.floor((end.getTime() - start.getTime()) / 86400000);
 
     for (let offset = 0; offset <= totalDays; offset += 1) {
@@ -334,11 +357,32 @@ export async function syncDailyHealthData(
         }
       }
 
-      const [sleep, hrv, restingHeartRate] = await Promise.all([
+      const [sleepResult, hrvResult, restingHeartRateResult] = await Promise.allSettled([
         clientResult.client.getSleepData(currentDate),
         clientResult.client.getHrvData(currentDate),
         clientResult.client.getRestingHeartRate(currentDate),
       ]);
+
+      for (const result of [sleepResult, hrvResult, restingHeartRateResult]) {
+        if (result.status === "rejected" && !isRecoverableGarminDataError(result.reason)) {
+          throw result.reason;
+        }
+      }
+
+      const sleep = sleepResult.status === "fulfilled" ? sleepResult.value : undefined;
+      const hrv = hrvResult.status === "fulfilled" ? hrvResult.value : undefined;
+      const restingHeartRate =
+        restingHeartRateResult.status === "fulfilled"
+          ? restingHeartRateResult.value
+          : undefined;
+
+      if (
+        sleepResult.status === "rejected" ||
+        hrvResult.status === "rejected" ||
+        restingHeartRateResult.status === "rejected"
+      ) {
+        skippedUnavailable += 1;
+      }
 
       const mapped = mapDailyHealthReadings({
         date: currentDate,
@@ -397,13 +441,16 @@ export async function syncDailyHealthData(
     return {
       success: true,
       synced,
-      message: `Synced health data for ${synced} day(s).`,
+      message:
+        skippedUnavailable > 0
+          ? `Synced health data for ${synced} day(s). Skipped ${skippedUnavailable} day(s) with unavailable Garmin endpoints.`
+          : `Synced health data for ${synced} day(s).`,
     };
   } catch (error) {
     return {
       success: false,
       synced: 0,
-      message: error instanceof Error ? error.message : "Health sync failed.",
+      message: getErrorMessage(error) || "Health sync failed.",
     };
   }
 }
@@ -422,14 +469,29 @@ export async function syncUserRunningFitness(
   }
 
   try {
-    const predictionsRaw = await clientResult.client.getRacePredictions();
+    let predictionsRaw: unknown;
+    try {
+      predictionsRaw = await clientResult.client.getRacePredictions();
+    } catch (error) {
+      if (isRecoverableGarminDataError(error)) {
+        return {
+          success: true,
+          synced: false,
+          message:
+            "Running fitness data is unavailable from Garmin for this account.",
+        };
+      }
+
+      throw error;
+    }
+
     const predictions = Array.isArray(predictionsRaw)
       ? asObject(predictionsRaw[0])
       : asObject(predictionsRaw);
 
     if (!predictions) {
       return {
-        success: false,
+        success: true,
         synced: false,
         message: "No race prediction data returned by Garmin.",
       };
@@ -440,7 +502,7 @@ export async function syncUserRunningFitness(
 
     if (!predicted10kSeconds) {
       return {
-        success: false,
+        success: true,
         synced: false,
         message: "Race predictions are missing 10K time.",
       };
@@ -513,7 +575,7 @@ export async function syncUserRunningFitness(
     return {
       success: false,
       synced: false,
-      message: error instanceof Error ? error.message : "Running fitness sync failed.",
+      message: getErrorMessage(error) || "Running fitness sync failed.",
     };
   }
 }
