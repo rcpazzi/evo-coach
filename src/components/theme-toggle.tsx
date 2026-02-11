@@ -1,5 +1,6 @@
 "use client";
 
+import { useSyncExternalStore } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -13,8 +14,14 @@ import {
 
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
 
-  const activeTheme = theme ?? "system";
+  // During SSR/initial hydration, force a stable icon to avoid mismatch.
+  const activeTheme = mounted ? (theme ?? "system") : "system";
 
   return (
     <DropdownMenu>
