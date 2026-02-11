@@ -1,0 +1,143 @@
+generator client {
+  provider = "prisma-client"
+  output   = "./generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id               Int       @id @default(autoincrement())
+  email            String    @unique
+  passwordHash     String    @map("password_hash")
+  garminConnected  Boolean   @default(false) @map("garmin_connected")
+  garminOauthToken Bytes?    @map("garmin_oauth_token")
+  lastSyncAt       DateTime? @map("last_sync_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  activities          Activity[]
+  dailyHealthReadings DailyHealthReading[]
+  runningFitness      UserRunningFitness?
+  workouts            Workout[]
+  aiTrainingInsights  AiTrainingInsight[]
+
+  @@map("users")
+}
+
+model Activity {
+  id                      Int       @id @default(autoincrement())
+  userId                  Int       @map("user_id")
+  garminActivityId        BigInt?   @unique @map("garmin_activity_id")
+  activityDate            DateTime? @map("activity_date")
+  activityName            String?   @map("activity_name")
+  activityType            String?   @map("activity_type")
+  activityDescription     String?   @map("activity_description")
+  distanceMeters          Float?    @map("distance_meters")
+  durationSeconds         Int?      @map("duration_seconds")
+  averagePaceSecondsPerKm Int?      @map("average_pace_seconds_per_km")
+  splitSummariesJson      Json?     @map("split_summaries_json")
+  averageHrBpm            Int?      @map("average_hr_bpm")
+  maxHrBpm                Int?      @map("max_hr_bpm")
+  hrTimeInZone1           Int?      @map("hr_time_in_zone1")
+  hrTimeInZone2           Int?      @map("hr_time_in_zone2")
+  hrTimeInZone3           Int?      @map("hr_time_in_zone3")
+  hrTimeInZone4           Int?      @map("hr_time_in_zone4")
+  hrTimeInZone5           Int?      @map("hr_time_in_zone5")
+  aerobicTrainingEffect   Float?    @map("aerobic_training_effect")
+  anaerobicTrainingEffect Float?    @map("anaerobic_training_effect")
+  trainingEffectLabel     String?   @map("training_effect_label")
+  elevationGain           Float?    @map("elevation_gain")
+  elevationLoss           Float?    @map("elevation_loss")
+  locationName            String?   @map("location_name")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, activityDate], name: "idx_activities_user_date")
+  @@map("activities")
+}
+
+model DailyHealthReading {
+  id                       Int      @id @default(autoincrement())
+  userId                   Int      @map("user_id")
+  readingDate              DateTime @map("reading_date") @db.Date
+  sleepScore               Int?     @map("sleep_score")
+  totalSleepSeconds        Int?     @map("total_sleep_seconds")
+  sleepStress              Int?     @map("sleep_stress")
+  sleepScoreGarminFeedback String?  @map("sleep_score_garmin_feedback")
+  avgOvernightHrv          Float?   @map("avg_overnight_hrv")
+  hrvStatus                String?  @map("hrv_status")
+  hrv7dayAvg               Float?   @map("hrv_7day_avg")
+  restingHr                Int?     @map("resting_hr")
+  restingHr7dayAvg         Int?     @map("resting_hr_7day_avg")
+  bodyBatteryStart         Int?     @map("body_battery_start")
+  bodyBatteryEnd           Int?     @map("body_battery_end")
+  dataSyncedAt             DateTime @default(now()) @map("data_synced_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, readingDate])
+  @@index([userId, readingDate(sort: Desc)], name: "idx_daily_health_user_date")
+  @@map("daily_health_readings")
+}
+
+model UserRunningFitness {
+  id                       Int       @id @default(autoincrement())
+  userId                   Int       @unique @map("user_id")
+  vo2Max                   Int?      @map("vo2_max")
+  predicted5kSeconds       Int?      @map("predicted_5k_seconds")
+  predicted10kSeconds      Int?      @map("predicted_10k_seconds")
+  predictedHalfSeconds     Int?      @map("predicted_half_seconds")
+  predictedMarathonSeconds Int?      @map("predicted_marathon_seconds")
+  racePredictionsLastUpdate DateTime? @map("race_predictions_last_update") @db.Date
+  easyPaceLow              Int?      @map("easy_pace_low")
+  easyPaceHigh             Int?      @map("easy_pace_high")
+  tempoPace                Int?      @map("tempo_pace")
+  thresholdPace            Int?      @map("threshold_pace")
+  intervalPace             Int?      @map("interval_pace")
+  repetitionPace           Int?      @map("repetition_pace")
+  longRunPace              Int?      @map("long_run_pace")
+  weeklyVolumeAvgKm        Float?    @map("weekly_volume_avg_km")
+  longestRunKm             Float?    @map("longest_run_km")
+  runningDistanceAvgKm     Float?    @map("running_distance_avg_km")
+  lastUpdated              DateTime? @map("last_updated")
+  dataSource               String    @default("garmin") @map("data_source")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_running_fitness")
+}
+
+model Workout {
+  id                       Int       @id @default(autoincrement())
+  userId                   Int       @map("user_id")
+  workoutType              String    @map("workout_type")
+  title                    String
+  aiDescription            String?   @map("ai_description")
+  workoutJson              Json      @map("workout_json")
+  totalDistanceKm          Float?    @map("total_distance_km")
+  estimatedDurationMinutes Int?      @map("estimated_duration_minutes")
+  userPrompt               String?   @map("user_prompt")
+  status                   String    @default("generated")
+  scheduledDate            DateTime? @map("scheduled_date") @db.Date
+  garminWorkoutId          BigInt?   @map("garmin_workout_id")
+  createdAt                DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("workouts")
+}
+
+model AiTrainingInsight {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  insightDate DateTime @map("insight_date") @db.Date
+  insightText String   @map("insight_text")
+  insightType String?  @map("insight_type")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, insightDate, insightType])
+  @@map("ai_training_insights")
+}

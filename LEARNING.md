@@ -4,6 +4,22 @@ A practical reference for migrating from Flask/SQLite to Next.js/React/Shadcn/Pr
 
 ---
 
+## Current Implementation Notes (February 11, 2026)
+
+- AI provider selection is runtime-configurable via `AI_PROVIDER`:
+  - `openrouter` (default) requires `OPENROUTER_API_KEY`
+  - `anthropic` requires `ANTHROPIC_API_KEY`
+- Workout generation API contract:
+  - `POST /api/workout/generate`
+  - Requires authenticated user and existing `userRunningFitness` data
+  - Missing fitness profile returns a sync-first guidance error
+- Workout decision APIs:
+  - `POST /api/workout/[id]/accept` uploads to Garmin first, then marks workout `uploaded`
+  - If Garmin upload fails, workout remains `generated`
+  - `POST /api/workout/[id]/reject` marks workout `rejected`
+
+---
+
 ## 1. Tech Stack Overview
 
 | Tool | What It Does | Flask Equivalent |
@@ -759,3 +775,10 @@ Client Components CANNOT be async. Pass data as props from a Server Component, o
 - NextAuth.js: https://next-auth.js.org
 - next-themes: https://github.com/pacocoursey/next-themes
 - Tailwind CSS: https://tailwindcss.com/docs
+
+## Migration Note (2026-02-11): Garmin Sync Hardening
+
+- Garmin sync now acquires a single Garmin client/session per sync request and reuses it across activities, daily health, and running fitness sync operations.
+- `POST /api/garmin/sync` now accepts optional empty request bodies robustly by parsing raw text only when present.
+- Unsupported adapter operations are surfaced explicitly as capability errors from the Garmin adapter layer.
+- Direct HTTP fallback is still intentionally deferred; unsupported operations should return clear error messages instead of ambiguous failures.
