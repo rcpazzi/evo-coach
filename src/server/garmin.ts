@@ -42,6 +42,21 @@ export interface GarminAdapter {
   uploadWorkout(workoutJson: unknown): Promise<unknown>;
 }
 
+export class GarminCapabilityError extends Error {
+  status: number;
+  operation: string;
+
+  constructor(operation: string, message?: string, status = 501) {
+    super(
+      message ??
+        `Garmin operation '${operation}' is not supported by the current adapter and HTTP fallback is not configured.`,
+    );
+    this.name = "GarminCapabilityError";
+    this.status = status;
+    this.operation = operation;
+  }
+}
+
 function asObject(value: unknown): JsonObject | null {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     return value as JsonObject;
@@ -275,10 +290,16 @@ async function invokeMethod(
   throw new Error(`Missing Garmin capability: ${methodNames.join("/")}`);
 }
 
-async function fallbackHttpRequest(operation: string): Promise<never> {
-  throw new Error(
-    `Garmin operation '${operation}' is not supported by current adapter methods and HTTP fallback is not configured yet.`,
-  );
+function isMissingCapabilityError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message.startsWith("Missing Garmin capability:");
+}
+
+function fallbackHttpRequest(operation: string): never {
+  throw new GarminCapabilityError(operation);
 }
 
 function normalizeActivityResponse(value: unknown): unknown[] {
@@ -317,24 +338,33 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
         );
 
         return normalizeActivityResponse(response);
-      } catch {
-        return fallbackHttpRequest("activities");
+      } catch (error) {
+        if (isMissingCapabilityError(error)) {
+          return fallbackHttpRequest("activities");
+        }
+        throw error;
       }
     },
 
     async getSleepData(date) {
       try {
         return await invokeMethod(client, ["getSleepData", "get_sleep_data"], [[date]]);
-      } catch {
-        return fallbackHttpRequest("sleep");
+      } catch (error) {
+        if (isMissingCapabilityError(error)) {
+          return fallbackHttpRequest("sleep");
+        }
+        throw error;
       }
     },
 
     async getHrvData(date) {
       try {
         return await invokeMethod(client, ["getHrvData", "get_hrv_data"], [[date]]);
-      } catch {
-        return fallbackHttpRequest("hrv");
+      } catch (error) {
+        if (isMissingCapabilityError(error)) {
+          return fallbackHttpRequest("hrv");
+        }
+        throw error;
       }
     },
 
@@ -345,8 +375,11 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
           ["getHeartRates", "get_heart_rates", "getRestingHeartRate"],
           [[date]],
         );
-      } catch {
-        return fallbackHttpRequest("resting-heart-rate");
+      } catch (error) {
+        if (isMissingCapabilityError(error)) {
+          return fallbackHttpRequest("resting-heart-rate");
+        }
+        throw error;
       }
     },
 
@@ -357,16 +390,22 @@ function createGarminAdapter(client: RawGarminClient): GarminAdapter {
           ["getRacePredictions", "get_race_predictions"],
           [[], [{}]],
         );
-      } catch {
-        return fallbackHttpRequest("race-predictions");
+      } catch (error) {
+        if (isMissingCapabilityError(error)) {
+          return fallbackHttpRequest("race-predictions");
+        }
+        throw error;
       }
     },
 
     async uploadWorkout(workoutJson) {
       try {
         return await invokeMethod(client, ["uploadWorkout", "upload_workout"], [[workoutJson]]);
-      } catch {
-        return fallbackHttpRequest("upload-workout");
+      } catch (error) {
+        if (isMissingCapabilityError(error)) {
+          return fallbackHttpRequest("upload-workout");
+        }
+        throw error;
       }
     },
   };

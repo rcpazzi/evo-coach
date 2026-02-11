@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getGarminClientForUser } from "@/server/garmin";
+import { type GarminAdapter, getGarminClientForUser } from "@/server/garmin";
 import {
   mapActivity,
   mapDailyHealthReadings,
@@ -7,6 +7,14 @@ import {
   mapRunningVolume,
 } from "@/server/garmin-field-mapper";
 import { calculateTrainingPaces } from "@/server/vdot";
+
+export type SyncContext = {
+  client: GarminAdapter;
+};
+
+type SyncContextResult =
+  | { success: true; context: SyncContext }
+  | { success: false; message: string; status?: number };
 
 type SyncCountResult = {
   success: boolean;
@@ -62,7 +70,11 @@ function addDays(base: Date, offsetDays: number): Date {
   return copy;
 }
 
-function calculatePaceSecondsPerKm(activityRaw: unknown, mappedDistance?: number, mappedDuration?: number) {
+function calculatePaceSecondsPerKm(
+  activityRaw: unknown,
+  mappedDistance?: number,
+  mappedDuration?: number,
+) {
   const rawObject = asObject(activityRaw);
   const speedMps = rawObject ? asNumber(rawObject.averageSpeed) : undefined;
 
@@ -103,12 +115,51 @@ function isRunningActivity(raw: unknown, mappedType?: string | null): boolean {
   return Boolean(typeKey && typeKey.toLowerCase().includes("running"));
 }
 
+async function resolveGarminClient(
+  userId: number,
+  context?: SyncContext,
+): Promise<{ success: true; client: GarminAdapter } | { success: false; message: string }> {
+  if (context?.client) {
+    return { success: true, client: context.client };
+  }
+
+  const clientResult = await getGarminClientForUser(userId);
+  if (!clientResult.success) {
+    return {
+      success: false,
+      message: clientResult.message,
+    };
+  }
+
+  return {
+    success: true,
+    client: clientResult.client,
+  };
+}
+
+export async function createSyncContext(userId: number): Promise<SyncContextResult> {
+  const clientResult = await getGarminClientForUser(userId);
+  if (!clientResult.success) {
+    return {
+      success: false,
+      message: clientResult.message,
+      status: clientResult.status,
+    };
+  }
+
+  return {
+    success: true,
+    context: { client: clientResult.client },
+  };
+}
+
 export async function syncUserActivities(
   userId: number,
   startDate: string,
   endDate: string,
+  context?: SyncContext,
 ): Promise<SyncCountResult> {
-  const clientResult = await getGarminClientForUser(userId);
+  const clientResult = await resolveGarminClient(userId, context);
   if (!clientResult.success) {
     return {
       success: false,
@@ -235,8 +286,9 @@ export async function syncDailyHealthData(
   userId: number,
   startDate: string,
   endDate: string,
+  context?: SyncContext,
 ): Promise<SyncCountResult> {
-  const clientResult = await getGarminClientForUser(userId);
+  const clientResult = await resolveGarminClient(userId, context);
   if (!clientResult.success) {
     return {
       success: false,
@@ -356,8 +408,11 @@ export async function syncDailyHealthData(
   }
 }
 
-export async function syncUserRunningFitness(userId: number): Promise<SyncFitnessResult> {
-  const clientResult = await getGarminClientForUser(userId);
+export async function syncUserRunningFitness(
+  userId: number,
+  context?: SyncContext,
+): Promise<SyncFitnessResult> {
+  const clientResult = await resolveGarminClient(userId, context);
   if (!clientResult.success) {
     return {
       success: false,
@@ -466,8 +521,9 @@ export async function syncUserRunningFitness(userId: number): Promise<SyncFitnes
 export async function uploadWorkoutToGarmin(
   userId: number,
   workoutData: unknown,
+  context?: SyncContext,
 ): Promise<{ success: boolean; message: string; workoutId?: number }> {
-  const clientResult = await getGarminClientForUser(userId);
+  const clientResult = await resolveGarminClient(userId, context);
   if (!clientResult.success) {
     return {
       success: false,

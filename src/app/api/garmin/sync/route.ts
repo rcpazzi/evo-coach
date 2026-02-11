@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
+  createSyncContext,
   syncDailyHealthData,
   syncUserActivities,
   syncUserRunningFitness,
@@ -12,6 +13,8 @@ type SyncBody = {
   startDate?: unknown;
   endDate?: unknown;
 };
+
+const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 function getUserId(
   session: { user?: { id?: string | null } } | null,
@@ -27,8 +30,15 @@ function getUserId(
 }
 
 function parseDateOnly(value: string): Date {
+  if (!DATE_ONLY_REGEX.test(value)) {
+    throw new Error("Invalid date format. Use YYYY-MM-DD.");
+  }
+
   const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime())) {
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== value
+  ) {
     throw new Error("Invalid date format. Use YYYY-MM-DD.");
   }
   return parsed;
@@ -53,8 +63,9 @@ export async function POST(request: Request) {
 
   let body: SyncBody = {};
   try {
-    if (request.headers.get("content-length") !== "0") {
-      body = (await request.json()) as SyncBody;
+    const rawBody = await request.text();
+    if (rawBody.trim() !== "") {
+      body = JSON.parse(rawBody) as SyncBody;
     }
   } catch {
     return NextResponse.json(
@@ -101,25 +112,21 @@ export async function POST(request: Request) {
     );
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { garminConnected: true, garminOauthToken: true },
-  });
-
-  if (!user?.garminConnected || !user.garminOauthToken) {
+  const syncContextResult = await createSyncContext(userId);
+  if (!syncContextResult.success) {
     return NextResponse.json(
       {
         success: false,
-        message: "Garmin not connected. Connect your Garmin account first.",
+        message: syncContextResult.message,
       },
-      { status: 400 },
+      { status: syncContextResult.status ?? 400 },
     );
   }
 
   const [activityResult, healthResult, fitnessResult] = await Promise.all([
-    syncUserActivities(userId, startDate, endDate),
-    syncDailyHealthData(userId, startDate, endDate),
-    syncUserRunningFitness(userId),
+    syncUserActivities(userId, startDate, endDate, syncContextResult.context),
+    syncDailyHealthData(userId, startDate, endDate, syncContextResult.context),
+    syncUserRunningFitness(userId, syncContextResult.context),
   ]);
 
   const hasFailure =

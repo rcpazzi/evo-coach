@@ -8,8 +8,8 @@
   - `LEARNING.md` for stack-specific guidance and mental models.
 
 ## 2. Current Migration Phase
-- Step 2 (authentication) is implemented.
-- Current active target is Step 3: root layout + theme + navbar.
+- Steps 2, 3, 5, and 6 are implemented (auth, app shell, Garmin core + sync routes).
+- Current active target is Step 4 catch-up: dashboard component suite + health metrics API.
 - Do not skip migration order unless explicitly requested by the user.
 
 ## 3. Core Engineering Rules

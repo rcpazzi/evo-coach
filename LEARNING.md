@@ -759,3 +759,10 @@ Client Components CANNOT be async. Pass data as props from a Server Component, o
 - NextAuth.js: https://next-auth.js.org
 - next-themes: https://github.com/pacocoursey/next-themes
 - Tailwind CSS: https://tailwindcss.com/docs
+
+## Migration Note (2026-02-11): Garmin Sync Hardening
+
+- Garmin sync now acquires a single Garmin client/session per sync request and reuses it across activities, daily health, and running fitness sync operations.
+- `POST /api/garmin/sync` now accepts optional empty request bodies robustly by parsing raw text only when present.
+- Unsupported adapter operations are surfaced explicitly as capability errors from the Garmin adapter layer.
+- Direct HTTP fallback is still intentionally deferred; unsupported operations should return clear error messages instead of ambiguous failures.
